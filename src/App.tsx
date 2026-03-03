@@ -6,6 +6,7 @@ const SCOPES = 'user-top-read'
 const REDIRECT_URI = window.location.origin + window.location.pathname
 
 type TimeRange = 'short_term' | 'medium_term' | 'long_term'
+type ViewMode = 'artists' | 'tracks'
 
 const TIME_RANGE_LABELS: Record<TimeRange, string> = {
   short_term: 'Last 4 Weeks',
@@ -13,10 +14,17 @@ const TIME_RANGE_LABELS: Record<TimeRange, string> = {
   long_term: 'All Time',
 }
 
-const TIME_RANGE_DESCRIPTIONS: Record<TimeRange, string> = {
-  short_term: 'Your top artists from the last 4 weeks',
-  medium_term: 'Your top artists from the last 6 months',
-  long_term: 'Your most listened to artists of all time',
+const DESCRIPTIONS: Record<ViewMode, Record<TimeRange, string>> = {
+  artists: {
+    short_term: 'Your top artists from the last 4 weeks',
+    medium_term: 'Your top artists from the last 6 months',
+    long_term: 'Your most listened to artists of all time',
+  },
+  tracks: {
+    short_term: 'Your top tracks from the last 4 weeks',
+    medium_term: 'Your top tracks from the last 6 months',
+    long_term: 'Your most listened to tracks of all time',
+  },
 }
 
 interface SpotifyArtist {
@@ -29,9 +37,28 @@ interface SpotifyArtist {
   followers: { total: number }
 }
 
+interface SpotifyTrack {
+  id: string
+  name: string
+  album: {
+    name: string
+    images: { url: string; height: number; width: number }[]
+  }
+  artists: { name: string; id: string }[]
+  popularity: number
+  external_urls: { spotify: string }
+  duration_ms: number
+}
+
 interface SpotifyUser {
   display_name: string
   images: { url: string }[]
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60000)
+  const seconds = Math.floor((ms % 60000) / 1000)
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
 // PKCE helpers
@@ -66,12 +93,19 @@ function App() {
     medium_term: [],
     long_term: [],
   })
+  const [tracksByRange, setTracksByRange] = useState<Record<TimeRange, SpotifyTrack[]>>({
+    short_term: [],
+    medium_term: [],
+    long_term: [],
+  })
   const [activeRange, setActiveRange] = useState<TimeRange>('long_term')
+  const [viewMode, setViewMode] = useState<ViewMode>('artists')
   const [user, setUser] = useState<SpotifyUser | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const artists = artistsByRange[activeRange]
+  const tracks = tracksByRange[activeRange]
 
   useEffect(() => {
     const storedToken = sessionStorage.getItem('spotify_token')
@@ -124,9 +158,14 @@ function App() {
     setError(null)
     try {
       const timeRanges: TimeRange[] = ['short_term', 'medium_term', 'long_term']
-      const [shortRes, mediumRes, longRes, userRes] = await Promise.all([
+      const responses = await Promise.all([
         ...timeRanges.map((range) =>
           fetch(`https://api.spotify.com/v1/me/top/artists?time_range=${range}&limit=50`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+        ),
+        ...timeRanges.map((range) =>
+          fetch(`https://api.spotify.com/v1/me/top/tracks?time_range=${range}&limit=50`, {
             headers: { Authorization: `Bearer ${accessToken}` },
           })
         ),
@@ -135,28 +174,29 @@ function App() {
         }),
       ])
 
-      if (shortRes.status === 401 || mediumRes.status === 401 || longRes.status === 401 || userRes.status === 401) {
+      if (responses.some((r) => r.status === 401)) {
         sessionStorage.removeItem('spotify_token')
         setToken(null)
         setError('Session expired. Please log in again.')
         return
       }
 
-      if (!shortRes.ok || !mediumRes.ok || !longRes.ok || !userRes.ok) {
+      if (responses.some((r) => !r.ok)) {
         throw new Error('Failed to fetch data from Spotify')
       }
 
-      const [shortData, mediumData, longData, userData] = await Promise.all([
-        shortRes.json(),
-        mediumRes.json(),
-        longRes.json(),
-        userRes.json(),
-      ])
+      const allData = await Promise.all(responses.map((r) => r.json()))
+      const [shortArtists, mediumArtists, longArtists, shortTracks, mediumTracks, longTracks, userData] = allData
 
       setArtistsByRange({
-        short_term: shortData.items || [],
-        medium_term: mediumData.items || [],
-        long_term: longData.items || [],
+        short_term: shortArtists.items || [],
+        medium_term: mediumArtists.items || [],
+        long_term: longArtists.items || [],
+      })
+      setTracksByRange({
+        short_term: shortTracks.items || [],
+        medium_term: mediumTracks.items || [],
+        long_term: longTracks.items || [],
       })
       setUser(userData)
     } catch (err) {
@@ -185,6 +225,7 @@ function App() {
     sessionStorage.removeItem('spotify_token')
     setToken(null)
     setArtistsByRange({ short_term: [], medium_term: [], long_term: [] })
+    setTracksByRange({ short_term: [], medium_term: [], long_term: [] })
     setUser(null)
   }
 
@@ -231,7 +272,7 @@ function App() {
       <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 flex items-center justify-center">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-green-500/30 border-t-green-500 rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-zinc-400 text-lg">Loading your top artists...</p>
+          <p className="text-zinc-400 text-lg">Loading your top music...</p>
         </div>
       </div>
     )
@@ -247,7 +288,7 @@ function App() {
             <svg viewBox="0 0 24 24" className="w-8 h-8 text-green-500 fill-current">
               <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
             </svg>
-            <h1 className="text-xl font-bold text-white">Your Top Artists</h1>
+            <h1 className="text-xl font-bold text-white">Your Top Music</h1>
           </div>
           <div className="flex items-center gap-4">
             {user && (
@@ -275,27 +316,44 @@ function App() {
       {/* Hero section */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-4">
         <h2 className="text-3xl sm:text-4xl font-bold text-white mb-2">
-          {user ? `${user.display_name}'s` : 'Your'} Top Artists
+          {user ? `${user.display_name}'s` : 'Your'} Top {viewMode === 'artists' ? 'Artists' : 'Tracks'}
         </h2>
         <p className="text-zinc-400 text-lg mb-6">
-          {TIME_RANGE_DESCRIPTIONS[activeRange]}
+          {DESCRIPTIONS[viewMode][activeRange]}
         </p>
 
-        {/* Time range tabs */}
-        <div className="flex gap-2">
-          {(Object.keys(TIME_RANGE_LABELS) as TimeRange[]).map((range) => (
-            <button
-              key={range}
-              onClick={() => setActiveRange(range)}
-              className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
-                activeRange === range
-                  ? 'bg-green-500 text-black'
-                  : 'bg-zinc-800/60 text-zinc-400 hover:bg-zinc-700/60 hover:text-white'
-              }`}
-            >
-              {TIME_RANGE_LABELS[range]}
-            </button>
-          ))}
+        {/* View mode + Time range tabs */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+          <div className="flex bg-zinc-800/60 rounded-full p-1">
+            {(['artists', 'tracks'] as ViewMode[]).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200 ${
+                  viewMode === mode
+                    ? 'bg-white text-black'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                {mode === 'artists' ? 'Artists' : 'Tracks'}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            {(Object.keys(TIME_RANGE_LABELS) as TimeRange[]).map((range) => (
+              <button
+                key={range}
+                onClick={() => setActiveRange(range)}
+                className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+                  activeRange === range
+                    ? 'bg-green-500 text-black'
+                    : 'bg-zinc-800/60 text-zinc-400 hover:bg-zinc-700/60 hover:text-white'
+                }`}
+              >
+                {TIME_RANGE_LABELS[range]}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -309,118 +367,234 @@ function App() {
       )}
 
       {/* Empty state */}
-      {!error && artists.length === 0 && (
+      {!error && ((viewMode === 'artists' && artists.length === 0) || (viewMode === 'tracks' && tracks.length === 0)) && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
-          <p className="text-zinc-400 text-lg">No top artists found for this time range.</p>
+          <p className="text-zinc-400 text-lg">No top {viewMode} found for this time range.</p>
           <p className="text-zinc-500 text-sm mt-2">Try selecting a different time range above.</p>
         </div>
       )}
 
-      {/* Top 3 Podium */}
-      {artists.length >= 3 && (
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pb-10">
-          <div className="grid grid-cols-3 gap-3 sm:gap-6 items-end">
-            {/* #2 */}
-            <div className="flex flex-col items-center group">
-              <div className="relative mb-3">
-                <div className="absolute -inset-1 bg-zinc-400/20 rounded-full blur-md group-hover:blur-lg transition-all" />
-                <img
-                  src={artists[1].images[0]?.url || 'https://placehold.co/300x300/png'}
-                  alt={artists[1].name}
-                  className="relative w-24 h-24 sm:w-36 sm:h-36 rounded-full object-cover ring-2 ring-zinc-400/50"
-                />
-                <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-zinc-700 text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full">
-                  2
+      {/* ===== ARTISTS VIEW ===== */}
+      {viewMode === 'artists' && (
+        <>
+          {/* Top 3 Artist Podium */}
+          {artists.length >= 3 && (
+            <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pb-10">
+              <div className="grid grid-cols-3 gap-3 sm:gap-6 items-end">
+                {/* #2 */}
+                <div className="flex flex-col items-center group">
+                  <div className="relative mb-3">
+                    <div className="absolute -inset-1 bg-zinc-400/20 rounded-full blur-md group-hover:blur-lg transition-all" />
+                    <img
+                      src={artists[1].images[0]?.url || 'https://placehold.co/300x300/png'}
+                      alt={artists[1].name}
+                      className="relative w-24 h-24 sm:w-36 sm:h-36 rounded-full object-cover ring-2 ring-zinc-400/50"
+                    />
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-zinc-700 text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full">
+                      2
+                    </div>
+                  </div>
+                  <a href={artists[1].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-semibold text-sm sm:text-base text-center hover:text-green-400 transition-colors mt-1">
+                    {artists[1].name}
+                  </a>
+                  <p className="text-zinc-500 text-xs mt-0.5">{artists[1].genres[0] || ''}</p>
+                </div>
+                {/* #1 */}
+                <div className="flex flex-col items-center group">
+                  <div className="relative mb-3">
+                    <div className="absolute -inset-1.5 bg-yellow-500/20 rounded-full blur-lg group-hover:blur-xl transition-all" />
+                    <img
+                      src={artists[0].images[0]?.url || 'https://placehold.co/300x300/png'}
+                      alt={artists[0].name}
+                      className="relative w-32 h-32 sm:w-44 sm:h-44 rounded-full object-cover ring-2 ring-yellow-500/50"
+                    />
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-yellow-500 text-black text-xs font-bold w-8 h-8 flex items-center justify-center rounded-full shadow-lg shadow-yellow-500/30">
+                      1
+                    </div>
+                  </div>
+                  <a href={artists[0].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-bold text-base sm:text-lg text-center hover:text-green-400 transition-colors mt-1">
+                    {artists[0].name}
+                  </a>
+                  <p className="text-zinc-500 text-xs mt-0.5">{artists[0].genres[0] || ''}</p>
+                </div>
+                {/* #3 */}
+                <div className="flex flex-col items-center group">
+                  <div className="relative mb-3">
+                    <div className="absolute -inset-1 bg-amber-700/20 rounded-full blur-md group-hover:blur-lg transition-all" />
+                    <img
+                      src={artists[2].images[0]?.url || 'https://placehold.co/300x300/png'}
+                      alt={artists[2].name}
+                      className="relative w-20 h-20 sm:w-32 sm:h-32 rounded-full object-cover ring-2 ring-amber-700/50"
+                    />
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-amber-700 text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full">
+                      3
+                    </div>
+                  </div>
+                  <a href={artists[2].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-semibold text-sm sm:text-base text-center hover:text-green-400 transition-colors mt-1">
+                    {artists[2].name}
+                  </a>
+                  <p className="text-zinc-500 text-xs mt-0.5">{artists[2].genres[0] || ''}</p>
                 </div>
               </div>
-              <a href={artists[1].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-semibold text-sm sm:text-base text-center hover:text-green-400 transition-colors mt-1">
-                {artists[1].name}
-              </a>
-              <p className="text-zinc-500 text-xs mt-0.5">{artists[1].genres[0] || ''}</p>
             </div>
-            {/* #1 */}
-            <div className="flex flex-col items-center group">
-              <div className="relative mb-3">
-                <div className="absolute -inset-1.5 bg-yellow-500/20 rounded-full blur-lg group-hover:blur-xl transition-all" />
-                <img
-                  src={artists[0].images[0]?.url || 'https://placehold.co/300x300/png'}
-                  alt={artists[0].name}
-                  className="relative w-32 h-32 sm:w-44 sm:h-44 rounded-full object-cover ring-2 ring-yellow-500/50"
-                />
-                <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-yellow-500 text-black text-xs font-bold w-8 h-8 flex items-center justify-center rounded-full shadow-lg shadow-yellow-500/30">
-                  1
-                </div>
-              </div>
-              <a href={artists[0].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-bold text-base sm:text-lg text-center hover:text-green-400 transition-colors mt-1">
-                {artists[0].name}
-              </a>
-              <p className="text-zinc-500 text-xs mt-0.5">{artists[0].genres[0] || ''}</p>
-            </div>
-            {/* #3 */}
-            <div className="flex flex-col items-center group">
-              <div className="relative mb-3">
-                <div className="absolute -inset-1 bg-amber-700/20 rounded-full blur-md group-hover:blur-lg transition-all" />
-                <img
-                  src={artists[2].images[0]?.url || 'https://placehold.co/300x300/png'}
-                  alt={artists[2].name}
-                  className="relative w-20 h-20 sm:w-32 sm:h-32 rounded-full object-cover ring-2 ring-amber-700/50"
-                />
-                <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-amber-700 text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full">
-                  3
-                </div>
-              </div>
-              <a href={artists[2].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-semibold text-sm sm:text-base text-center hover:text-green-400 transition-colors mt-1">
-                {artists[2].name}
-              </a>
-              <p className="text-zinc-500 text-xs mt-0.5">{artists[2].genres[0] || ''}</p>
+          )}
+
+          {/* Artist list */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+            <div className="grid gap-2">
+              {artists.slice(3).map((artist, index) => (
+                <a
+                  key={artist.id}
+                  href={artist.external_urls.spotify}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-4 p-3 rounded-xl hover:bg-zinc-800/60 transition-all duration-200 group"
+                >
+                  <span className="text-zinc-600 font-mono text-sm w-8 text-right shrink-0">
+                    {index + 4}
+                  </span>
+                  <img
+                    src={artist.images[artist.images.length > 1 ? 1 : 0]?.url || 'https://placehold.co/64x64/png'}
+                    alt={artist.name}
+                    className="w-12 h-12 rounded-full object-cover shrink-0 group-hover:ring-2 ring-green-500/30 transition-all"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-white font-medium truncate group-hover:text-green-400 transition-colors">
+                      {artist.name}
+                    </p>
+                    <p className="text-zinc-500 text-sm truncate">
+                      {artist.genres.slice(0, 3).join(' · ') || 'No genres listed'}
+                    </p>
+                  </div>
+                  <div className="hidden sm:flex items-center gap-2 shrink-0">
+                    <div className="w-24 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-green-500/60 rounded-full"
+                        style={{ width: `${artist.popularity}%` }}
+                      />
+                    </div>
+                    <span className="text-zinc-600 text-xs w-6">{artist.popularity}</span>
+                  </div>
+                  <span className="text-zinc-500 text-sm hidden md:block shrink-0">
+                    {artist.followers.total.toLocaleString()} followers
+                  </span>
+                </a>
+              ))}
             </div>
           </div>
-        </div>
+        </>
       )}
 
-      {/* Full list */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
-        <div className="grid gap-2">
-          {artists.slice(3).map((artist, index) => (
-            <a
-              key={artist.id}
-              href={artist.external_urls.spotify}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-4 p-3 rounded-xl hover:bg-zinc-800/60 transition-all duration-200 group"
-            >
-              <span className="text-zinc-600 font-mono text-sm w-8 text-right shrink-0">
-                {index + 4}
-              </span>
-              <img
-                src={artist.images[artist.images.length > 1 ? 1 : 0]?.url || 'https://placehold.co/64x64/png'}
-                alt={artist.name}
-                className="w-12 h-12 rounded-full object-cover shrink-0 group-hover:ring-2 ring-green-500/30 transition-all"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="text-white font-medium truncate group-hover:text-green-400 transition-colors">
-                  {artist.name}
-                </p>
-                <p className="text-zinc-500 text-sm truncate">
-                  {artist.genres.slice(0, 3).join(' · ') || 'No genres listed'}
-                </p>
-              </div>
-              <div className="hidden sm:flex items-center gap-2 shrink-0">
-                <div className="w-24 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-green-500/60 rounded-full"
-                    style={{ width: `${artist.popularity}%` }}
-                  />
+      {/* ===== TRACKS VIEW ===== */}
+      {viewMode === 'tracks' && (
+        <>
+          {/* Top 3 Track Podium */}
+          {tracks.length >= 3 && (
+            <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pb-10">
+              <div className="grid grid-cols-3 gap-3 sm:gap-6 items-end">
+                {/* #2 */}
+                <div className="flex flex-col items-center group">
+                  <div className="relative mb-3">
+                    <div className="absolute -inset-1 bg-zinc-400/20 rounded-lg blur-md group-hover:blur-lg transition-all" />
+                    <img
+                      src={tracks[1].album.images[0]?.url || 'https://placehold.co/300x300/png'}
+                      alt={tracks[1].name}
+                      className="relative w-24 h-24 sm:w-36 sm:h-36 rounded-lg object-cover ring-2 ring-zinc-400/50"
+                    />
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-zinc-700 text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full">
+                      2
+                    </div>
+                  </div>
+                  <a href={tracks[1].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-semibold text-sm sm:text-base text-center hover:text-green-400 transition-colors mt-1 line-clamp-2">
+                    {tracks[1].name}
+                  </a>
+                  <p className="text-zinc-500 text-xs mt-0.5 truncate max-w-full">{tracks[1].artists.map((a) => a.name).join(', ')}</p>
                 </div>
-                <span className="text-zinc-600 text-xs w-6">{artist.popularity}</span>
+                {/* #1 */}
+                <div className="flex flex-col items-center group">
+                  <div className="relative mb-3">
+                    <div className="absolute -inset-1.5 bg-yellow-500/20 rounded-lg blur-lg group-hover:blur-xl transition-all" />
+                    <img
+                      src={tracks[0].album.images[0]?.url || 'https://placehold.co/300x300/png'}
+                      alt={tracks[0].name}
+                      className="relative w-32 h-32 sm:w-44 sm:h-44 rounded-lg object-cover ring-2 ring-yellow-500/50"
+                    />
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-yellow-500 text-black text-xs font-bold w-8 h-8 flex items-center justify-center rounded-full shadow-lg shadow-yellow-500/30">
+                      1
+                    </div>
+                  </div>
+                  <a href={tracks[0].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-bold text-base sm:text-lg text-center hover:text-green-400 transition-colors mt-1 line-clamp-2">
+                    {tracks[0].name}
+                  </a>
+                  <p className="text-zinc-500 text-xs mt-0.5 truncate max-w-full">{tracks[0].artists.map((a) => a.name).join(', ')}</p>
+                </div>
+                {/* #3 */}
+                <div className="flex flex-col items-center group">
+                  <div className="relative mb-3">
+                    <div className="absolute -inset-1 bg-amber-700/20 rounded-lg blur-md group-hover:blur-lg transition-all" />
+                    <img
+                      src={tracks[2].album.images[0]?.url || 'https://placehold.co/300x300/png'}
+                      alt={tracks[2].name}
+                      className="relative w-20 h-20 sm:w-32 sm:h-32 rounded-lg object-cover ring-2 ring-amber-700/50"
+                    />
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-amber-700 text-white text-xs font-bold w-7 h-7 flex items-center justify-center rounded-full">
+                      3
+                    </div>
+                  </div>
+                  <a href={tracks[2].external_urls.spotify} target="_blank" rel="noopener noreferrer" className="text-white font-semibold text-sm sm:text-base text-center hover:text-green-400 transition-colors mt-1 line-clamp-2">
+                    {tracks[2].name}
+                  </a>
+                  <p className="text-zinc-500 text-xs mt-0.5 truncate max-w-full">{tracks[2].artists.map((a) => a.name).join(', ')}</p>
+                </div>
               </div>
-              <span className="text-zinc-500 text-sm hidden md:block shrink-0">
-                {artist.followers.total.toLocaleString()} followers
-              </span>
-            </a>
-          ))}
-        </div>
-      </div>
+            </div>
+          )}
+
+          {/* Track list */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+            <div className="grid gap-2">
+              {tracks.slice(3).map((track, index) => (
+                <a
+                  key={track.id}
+                  href={track.external_urls.spotify}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-4 p-3 rounded-xl hover:bg-zinc-800/60 transition-all duration-200 group"
+                >
+                  <span className="text-zinc-600 font-mono text-sm w-8 text-right shrink-0">
+                    {index + 4}
+                  </span>
+                  <img
+                    src={track.album.images[track.album.images.length > 1 ? 1 : 0]?.url || 'https://placehold.co/64x64/png'}
+                    alt={track.album.name}
+                    className="w-12 h-12 rounded-lg object-cover shrink-0 group-hover:ring-2 ring-green-500/30 transition-all"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-white font-medium truncate group-hover:text-green-400 transition-colors">
+                      {track.name}
+                    </p>
+                    <p className="text-zinc-500 text-sm truncate">
+                      {track.artists.map((a) => a.name).join(', ')} · {track.album.name}
+                    </p>
+                  </div>
+                  <div className="hidden sm:flex items-center gap-2 shrink-0">
+                    <div className="w-24 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-green-500/60 rounded-full"
+                        style={{ width: `${track.popularity}%` }}
+                      />
+                    </div>
+                    <span className="text-zinc-600 text-xs w-6">{track.popularity}</span>
+                  </div>
+                  <span className="text-zinc-500 text-sm hidden md:block shrink-0 tabular-nums">
+                    {formatDuration(track.duration_ms)}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-zinc-800/50 py-6 text-center">
