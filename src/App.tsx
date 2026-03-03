@@ -5,6 +5,20 @@ const CLIENT_ID = 'e7974284ab4b44f08570d2324f5f3d12'
 const SCOPES = 'user-top-read'
 const REDIRECT_URI = window.location.origin + window.location.pathname
 
+type TimeRange = 'short_term' | 'medium_term' | 'long_term'
+
+const TIME_RANGE_LABELS: Record<TimeRange, string> = {
+  short_term: 'Last 4 Weeks',
+  medium_term: 'Last 6 Months',
+  long_term: 'All Time',
+}
+
+const TIME_RANGE_DESCRIPTIONS: Record<TimeRange, string> = {
+  short_term: 'Your top artists from the last 4 weeks',
+  medium_term: 'Your top artists from the last 6 months',
+  long_term: 'Your most listened to artists of all time',
+}
+
 interface SpotifyArtist {
   id: string
   name: string
@@ -47,17 +61,23 @@ function getCodeFromUrl(): string | null {
 
 function App() {
   const [token, setToken] = useState<string | null>(null)
-  const [artists, setArtists] = useState<SpotifyArtist[]>([])
+  const [artistsByRange, setArtistsByRange] = useState<Record<TimeRange, SpotifyArtist[]>>({
+    short_term: [],
+    medium_term: [],
+    long_term: [],
+  })
+  const [activeRange, setActiveRange] = useState<TimeRange>('long_term')
   const [user, setUser] = useState<SpotifyUser | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const artists = artistsByRange[activeRange]
 
   useEffect(() => {
     const storedToken = sessionStorage.getItem('spotify_token')
     const code = getCodeFromUrl()
 
     if (code) {
-      // Exchange code for token
       const codeVerifier = sessionStorage.getItem('spotify_code_verifier')
       if (codeVerifier) {
         exchangeCodeForToken(code, codeVerifier)
@@ -99,30 +119,41 @@ function App() {
     setLoading(true)
     setError(null)
     try {
-      const [artistsRes, userRes] = await Promise.all([
-        fetch('https://api.spotify.com/v1/me/top/artists?time_range=long_term&limit=50', {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        }),
+      const timeRanges: TimeRange[] = ['short_term', 'medium_term', 'long_term']
+      const [shortRes, mediumRes, longRes, userRes] = await Promise.all([
+        ...timeRanges.map((range) =>
+          fetch(`https://api.spotify.com/v1/me/top/artists?time_range=${range}&limit=50`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+        ),
         fetch('https://api.spotify.com/v1/me', {
           headers: { Authorization: `Bearer ${accessToken}` },
         }),
       ])
 
-      if (artistsRes.status === 401 || userRes.status === 401) {
+      if (shortRes.status === 401 || mediumRes.status === 401 || longRes.status === 401 || userRes.status === 401) {
         sessionStorage.removeItem('spotify_token')
         setToken(null)
         setError('Session expired. Please log in again.')
         return
       }
 
-      if (!artistsRes.ok || !userRes.ok) {
+      if (!shortRes.ok || !mediumRes.ok || !longRes.ok || !userRes.ok) {
         throw new Error('Failed to fetch data from Spotify')
       }
 
-      const artistsData = await artistsRes.json()
-      const userData = await userRes.json()
+      const [shortData, mediumData, longData, userData] = await Promise.all([
+        shortRes.json(),
+        mediumRes.json(),
+        longRes.json(),
+        userRes.json(),
+      ])
 
-      setArtists(artistsData.items)
+      setArtistsByRange({
+        short_term: shortData.items,
+        medium_term: mediumData.items,
+        long_term: longData.items,
+      })
       setUser(userData)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
@@ -149,7 +180,7 @@ function App() {
   const handleLogout = () => {
     sessionStorage.removeItem('spotify_token')
     setToken(null)
-    setArtists([])
+    setArtistsByRange({ short_term: [], medium_term: [], long_term: [] })
     setUser(null)
   }
 
@@ -238,13 +269,30 @@ function App() {
       </header>
 
       {/* Hero section */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-4">
         <h2 className="text-3xl sm:text-4xl font-bold text-white mb-2">
-          {user ? `${user.display_name}'s` : 'Your'} All-Time Favorites
+          {user ? `${user.display_name}'s` : 'Your'} Top Artists
         </h2>
-        <p className="text-zinc-400 text-lg">
-          Your {artists.length} most listened to artists, ranked by listening history
+        <p className="text-zinc-400 text-lg mb-6">
+          {TIME_RANGE_DESCRIPTIONS[activeRange]}
         </p>
+
+        {/* Time range tabs */}
+        <div className="flex gap-2">
+          {(Object.keys(TIME_RANGE_LABELS) as TimeRange[]).map((range) => (
+            <button
+              key={range}
+              onClick={() => setActiveRange(range)}
+              className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+                activeRange === range
+                  ? 'bg-green-500 text-black'
+                  : 'bg-zinc-800/60 text-zinc-400 hover:bg-zinc-700/60 hover:text-white'
+              }`}
+            >
+              {TIME_RANGE_LABELS[range]}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Top 3 Podium */}
