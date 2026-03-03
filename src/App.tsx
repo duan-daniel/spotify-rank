@@ -20,11 +20,29 @@ interface SpotifyUser {
   images: { url: string }[]
 }
 
-function getTokenFromHash(): string | null {
-  const hash = window.location.hash
-  if (!hash) return null
-  const params = new URLSearchParams(hash.substring(1))
-  return params.get('access_token')
+// PKCE helpers
+function generateRandomString(length: number): string {
+  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const values = crypto.getRandomValues(new Uint8Array(length))
+  return values.reduce((acc, x) => acc + possible[x % possible.length], '')
+}
+
+async function sha256(plain: string): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(plain)
+  return window.crypto.subtle.digest('SHA-256', data)
+}
+
+function base64urlEncode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let str = ''
+  bytes.forEach((b) => (str += String.fromCharCode(b)))
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function getCodeFromUrl(): string | null {
+  const params = new URLSearchParams(window.location.search)
+  return params.get('code')
 }
 
 function App() {
@@ -36,16 +54,46 @@ function App() {
 
   useEffect(() => {
     const storedToken = sessionStorage.getItem('spotify_token')
-    const hashToken = getTokenFromHash()
+    const code = getCodeFromUrl()
 
-    if (hashToken) {
-      setToken(hashToken)
-      sessionStorage.setItem('spotify_token', hashToken)
+    if (code) {
+      // Exchange code for token
+      const codeVerifier = sessionStorage.getItem('spotify_code_verifier')
+      if (codeVerifier) {
+        exchangeCodeForToken(code, codeVerifier)
+      }
       window.history.replaceState(null, '', window.location.pathname)
     } else if (storedToken) {
       setToken(storedToken)
     }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const exchangeCodeForToken = async (code: string, codeVerifier: string) => {
+    setLoading(true)
+    try {
+      const res = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: CLIENT_ID,
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: REDIRECT_URI,
+          code_verifier: codeVerifier,
+        }),
+      })
+      if (!res.ok) {
+        throw new Error('Failed to exchange code for token')
+      }
+      const data = await res.json()
+      setToken(data.access_token)
+      sessionStorage.setItem('spotify_token', data.access_token)
+      sessionStorage.removeItem('spotify_code_verifier')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed')
+      setLoading(false)
+    }
+  }
 
   const fetchData = useCallback(async (accessToken: string) => {
     setLoading(true)
@@ -89,8 +137,12 @@ function App() {
     }
   }, [token, fetchData])
 
-  const handleLogin = () => {
-    const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`
+  const handleLogin = async () => {
+    const codeVerifier = generateRandomString(64)
+    sessionStorage.setItem('spotify_code_verifier', codeVerifier)
+    const hashed = await sha256(codeVerifier)
+    const codeChallenge = base64urlEncode(hashed)
+    const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&code_challenge_method=S256&code_challenge=${codeChallenge}&show_dialog=true`
     window.location.href = authUrl
   }
 
