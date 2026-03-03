@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Component } from 'react'
+import type { ReactNode, ErrorInfo } from 'react'
 import './App.css'
 
 const CLIENT_ID = 'e7974284ab4b44f08570d2324f5f3d12'
@@ -86,6 +87,45 @@ function getCodeFromUrl(): string | null {
   return params.get('code')
 }
 
+// Error Boundary to catch React render crashes
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('React Error Boundary caught:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 flex items-center justify-center px-4">
+          <div className="text-center max-w-lg">
+            <h1 className="text-2xl font-bold text-red-400 mb-4">Something went wrong</h1>
+            <p className="text-zinc-400 mb-4">{this.state.error?.message || 'An unexpected error occurred'}</p>
+            <button
+              onClick={() => {
+                sessionStorage.clear()
+                window.location.href = window.location.pathname
+              }}
+              className="bg-green-500 hover:bg-green-400 text-black font-semibold px-6 py-3 rounded-full"
+            >
+              Reset & Try Again
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 function App() {
   const [token, setToken] = useState<string | null>(null)
   const [artistsByRange, setArtistsByRange] = useState<Record<TimeRange, SpotifyArtist[]>>({
@@ -115,6 +155,9 @@ function App() {
       const codeVerifier = sessionStorage.getItem('spotify_code_verifier')
       if (codeVerifier) {
         exchangeCodeForToken(code, codeVerifier)
+      } else {
+        console.error('No code_verifier found in sessionStorage')
+        setError('Authentication failed: session data was lost. Please try logging in again.')
       }
       window.history.replaceState(null, '', window.location.pathname)
     } else if (storedToken) {
@@ -606,4 +649,12 @@ function App() {
   )
 }
 
-export default App
+function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  )
+}
+
+export default AppWithErrorBoundary
