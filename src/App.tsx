@@ -102,14 +102,18 @@ function App() {
           code_verifier: codeVerifier,
         }),
       })
-      if (!res.ok) {
-        throw new Error('Failed to exchange code for token')
-      }
       const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error_description || data.error || 'Failed to exchange code for token')
+      }
+      if (!data.access_token) {
+        throw new Error('No access token received')
+      }
       setToken(data.access_token)
       sessionStorage.setItem('spotify_token', data.access_token)
       sessionStorage.removeItem('spotify_code_verifier')
     } catch (err) {
+      console.error('Token exchange failed:', err)
       setError(err instanceof Error ? err.message : 'Authentication failed')
       setLoading(false)
     }
@@ -150,9 +154,9 @@ function App() {
       ])
 
       setArtistsByRange({
-        short_term: shortData.items,
-        medium_term: mediumData.items,
-        long_term: longData.items,
+        short_term: shortData.items || [],
+        medium_term: mediumData.items || [],
+        long_term: longData.items || [],
       })
       setUser(userData)
     } catch (err) {
@@ -294,6 +298,23 @@ function App() {
           ))}
         </div>
       </div>
+
+      {/* Error display */}
+      {error && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-4">
+          <div className="bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-3">
+            <p className="text-red-400 text-sm">{error}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!error && artists.length === 0 && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center">
+          <p className="text-zinc-400 text-lg">No top artists found for this time range.</p>
+          <p className="text-zinc-500 text-sm mt-2">Try selecting a different time range above.</p>
+        </div>
+      )}
 
       {/* Top 3 Podium */}
       {artists.length >= 3 && (
